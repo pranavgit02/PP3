@@ -1,0 +1,128 @@
+=============================================================================
+LLAMA.CPP ANDROID BUILD: TROUBLESHOOTING & FIXES DOCUMENTATION
+Project: Compiling the official llama.cpp Android wrapper (with ARM KleidiAI)
+Goal: Running local .gguf models natively on Android via C++ bindings
+=============================================================================
+
+This document serves as a record of the four major hurdles encountered while
+migrating from a pre-compiled library (PP2) to the bleeding-edge source code
+compilation (PP3), and the exact steps taken to resolve them.
+
+-----------------------------------------------------------------------------
+1. THE CMAKE URL LIST CRASH (KleidiAI Download Failure)
+-----------------------------------------------------------------------------
+SYMPTOM:
+The build failed immediately during the C++ Configure phase with errors:
+"At least one entry of URL is a path (invalid in a list)" and
+"CMake step for kleidiai_download failed: 1".
+
+CAUSE:
+Android Studio defaults to an older version of CMake (3.22.1). The upstream
+llama.cpp repository uses modern CMake features (FetchContent with URL lists)
+to download ARM's experimental KleidiAI CPU optimization library. The old
+CMake couldn't parse the modern syntax and crashed.
+
+THE FIX:
+1. Installed CMake 3.31.6 via Android Studio's SDK Manager (SDK Tools tab).
+2. Updated lib/build.gradle.kts to explicitly use the new version:
+   externalNativeBuild {
+       cmake {
+           version = "3.31.6"
+       }
+   }
+3. Updated lib/src/main/cpp/CMakeLists.txt to require the new version:
+   cmake_minimum_required(VERSION 3.31.6)
+4. CRITICAL: Deleted the hidden `.cxx` folder in the `lib` directory and
+   ran Build > Clean Project to clear the corrupted CMake memory cache.
+
+-----------------------------------------------------------------------------
+2. THE KOTLIN API REFACTOR ("Unresolved Reference LlamaAndroid")
+-----------------------------------------------------------------------------
+SYMPTOM:
+Build failed during the Kotlin compilation phase with "Unresolved reference
+'LlamaAndroid'".
+
+CAUSE:
+Pulling the master branch of llama.cpp brought in a massive, recent refactor
+contributed by ARM. The old `LlamaAndroid` wrapper class was deleted and
+replaced with a safer, coroutine-based `InferenceEngine` interface.
+Furthermore, the implementation class was marked internal/private to prevent
+direct instantiation.
+
+THE FIX:
+Rewrote the ViewModel to use Android's Application context and the new
+official Factory method provided by ARM.
+
+Old (Broken):
+private val llamaAndroid = LlamaAndroid.instance()
+
+New (Fixed):
+import com.arm.aichat.AiChat
+import com.arm.aichat.InferenceEngine
+
+class ChatViewModel(application: Application) : AndroidViewModel(application) {
+    private val inferenceEngine: InferenceEngine = AiChat.getInferenceEngine(application)
+}
+
+-----------------------------------------------------------------------------
+3. THE "TOO FAST" FILE COPY CRASH (C++ I/O Error)
+-----------------------------------------------------------------------------
+SYMPTOM:
+After successfully selecting a .gguf file, the app immediately threw:
+"java.lang.IllegalStateException: Failed to load model from
+/data/user/0/.../imported_model.gguf".
+
+CAUSE:
+The Kotlin code was copying the massive .gguf file to internal storage and
+immediately telling the C++ engine to open it. However, the Android OS had
+not physically finished flushing the copied bytes to the solid-state drive.
+The C++ engine encountered an incomplete/corrupted file header and panicked.
+
+THE FIX:
+Forced a synchronous disk write using FileDescriptor.sync() before passing
+the file path to the C++ engine.
+
+Code Fix in ChatViewModel.kt:
+val fos = java.io.FileOutputStream(destFile)
+context.contentResolver.openInputStream(uri)?.use { inputStream ->
+    fos.use { outputStream ->
+        inputStream.copyTo(outputStream)
+        // FORCE ANDROID TO PHYSICALLY WRITE ALL BYTES TO DISK
+        outputStream.fd.sync()
+    }
+}
+
+-----------------------------------------------------------------------------
+4. THE DYNAMIC LIBRARY EXTRACTION TRAP (The Final Boss)
+-----------------------------------------------------------------------------
+SYMPTOM:
+Even with a perfectly synced file and a tiny model (e.g., Qwen 0.5B), the
+engine still instantly threw "Failed to load model" and aborted.
+
+CAUSE:
+In modern Android versions, C++ .so files (Shared Objects) are kept zipped
+inside the .apk to save space. However, the new ARM wrapper dynamically
+searches the phone's storage at runtime to load specific CPU optimizations
+(e.g., libggml-cpu-armv8.2.so). Because the files were zipped, the engine
+couldn't find its math libraries and aborted the boot process entirely.
+
+THE FIX:
+Told the Android OS to physically unpack the C++ libraries during installation
+by adding the extractNativeLibs flag to the AndroidManifest.xml.
+
+Code Fix in app/src/main/AndroidManifest.xml:
+<application
+    android:extractNativeLibs="true"
+    ... >
+
+(Note: This required deleting the app entirely from the phone and doing a
+Clean Build to completely reset the APK packaging state).
+
+=============================================================================
+SUMMARY CHECKLIST FOR FUTURE BUILDS
+=============================================================================
+[ ] Verify CMake version in build.gradle.kts and CMakeLists.txt matches.
+[ ] Delete the `.cxx` folder if C++ configuration ever fails.
+[ ] Use `outputStream.fd.sync()` when copying large files for C++ to read.
+[ ] Ensure `android:extractNativeLibs="true"` is in the AndroidManifest.xml.
+[ ] Ensure downloaded .gguf files are raw models, not Hugging Face HTML pages.
