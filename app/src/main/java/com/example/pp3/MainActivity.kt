@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Refresh // NEW ICON
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -75,6 +76,16 @@ fun ChatScreen(viewModel: ChatViewModel) {
             TopAppBar(
                 title = { Text("Llama 16KB Engine") },
                 actions = {
+                    // NEW: Reset Chat Button (Only shows if a model is loaded)
+                    if (isModelLoaded) {
+                        IconButton(onClick = { viewModel.resetChat() }) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Reset Chat"
+                            )
+                        }
+                    }
+                    // Load Model Button
                     IconButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
                         Icon(
                             imageVector = Icons.Default.FolderOpen,
@@ -146,7 +157,6 @@ fun ChatBubble(message: ChatMessage) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
 
-    // ADAPTIVE COLORS: Uses the strict theme colors we set in Theme.kt
     val bubbleColor = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
 
@@ -169,7 +179,7 @@ fun ChatBubble(message: ChatMessage) {
         ) {
             Text(
                 text = message.content,
-                color = textColor, // FIXED TEXT COLOR
+                color = textColor,
                 style = MaterialTheme.typography.bodyMedium
             )
 

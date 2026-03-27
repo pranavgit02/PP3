@@ -25,7 +25,6 @@ data class ChatMessage(
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
-    // Initialize the engine using the official ARM Factory method!
     private val inferenceEngine: InferenceEngine = AiChat.getInferenceEngine(application)
 
     private val _messages: MutableStateFlow<List<ChatMessage>> = MutableStateFlow(emptyList())
@@ -37,7 +36,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     init {
         addSystemMessage("Click the Folder icon at the top right to import a .gguf model from your device.")
 
-        // Optional: Listen to the engine's internal state
         viewModelScope.launch {
             inferenceEngine.state.collect { state ->
                 Log.d("ChatViewModel", "Engine State: $state")
@@ -45,23 +43,50 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // NEW: Clears the UI and flushes the engine's short-term memory
+    fun resetChat() {
+        _messages.value = emptyList()
+        addSystemMessage("Chat session reset. You can start a new conversation.")
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Re-applying a system prompt flushes the internal KV cache
+                inferenceEngine.setSystemPrompt("You are a helpful, respectful, and honest AI assistant.")
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Failed to reset engine memory", e)
+            }
+        }
+    }
+
     fun importAndLoadModel(context: Context, uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
+            // Clear the chat screen for the new model
+            _messages.value = emptyList()
             _isModelLoaded.value = false
-            addSystemMessage("Copying model to secure app storage...\nPlease wait. This might take a minute.")
+            addSystemMessage("Preparing new session...")
 
             try {
+                // NEW: Safely unload any existing model from RAM before loading a new one
+                try {
+                    inferenceEngine.cleanUp()
+                } catch (e: Exception) {
+                    Log.d("ChatViewModel", "Engine was already clean: ${e.message}")
+                }
+
+                addSystemMessage("Copying model to secure app storage...\nPlease wait. This might take a minute.")
+
                 val destFile = File(context.filesDir, "imported_model.gguf")
+                val fos = java.io.FileOutputStream(destFile)
 
                 context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    destFile.outputStream().use { outputStream ->
+                    fos.use { outputStream ->
                         inputStream.copyTo(outputStream)
+                        outputStream.fd.sync()
                     }
                 }
 
                 addSystemMessage("Copy complete. Initializing ARM Inference Engine...")
 
-                // The new API uses a safe Kotlin suspend function
                 inferenceEngine.loadModel(destFile.absolutePath)
 
                 _isModelLoaded.value = true
@@ -89,7 +114,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             var isFirstToken = true
 
             try {
-                // The new ARM API handles ChatML templates automatically!
                 inferenceEngine.sendUserPrompt(userText)
                     .catch { e ->
                         Log.e("ChatViewModel", "Generation Error", e)
@@ -126,7 +150,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        // Safely destroy the engine when the app closes
         try {
             inferenceEngine.destroy()
         } catch (e: Exception) {
